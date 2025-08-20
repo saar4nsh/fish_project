@@ -1,0 +1,5 @@
+0) ssh gpunode3
+1) conda env list #List Environments
+2) conda activate sukrit_FISH #activate enevironment
+3) Only install in the main node and not on the side nodes (gpunodeX). 
+4) nohup python3 GeneDetection.py CUDA_VISIBLE_DEVICES=0 > FISH_run.log 2>&1 &
