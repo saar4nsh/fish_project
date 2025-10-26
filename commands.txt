@@ -1,6 +1,8 @@
 0) ssh gpunode3
 1) conda env list #List Environments
-2) conda activate sukrit_FISH #activate enevironment
+2) conda activate fish #activate enevironment
 3) Only install in the main node and not on the side nodes (gpunodeX). 
 4) nohup python3 GeneDetection.py CUDA_VISIBLE_DEVICES=0 > FISH_run.log 2>&1 &
 5) to view running processes ->  nvidia-smi -i 0
+6) command for running yolo : 
+   python train.py --img 640 --batch 2 --epochs 50 --data dataset.yaml --weights yolov5s.pt --device 1 &> YOLO_run.log
