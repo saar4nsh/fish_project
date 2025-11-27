@@ -5,14 +5,14 @@ import numpy as np
 from pathlib import Path
 
 # --- Configuration ---
-WEIGHTS_FILE = "/home/cvpr_ug_4/saaransh/Model_B/yolov5/runs/train/exp5/weights/best.pt" # Path to your .pt file
+WEIGHTS_FILE = "/home/cvpr_ug_4/saaransh/Model_B/yolov5/runs/train/exp2/weights/best.pt" # Path to your .pt file
 SOURCE_DIR = "/home/cvpr_ug_4/saaransh/fish_AI_images/13.09.2025/cell_patches" # Input directory with patches
 # **NEW**: Define separate output directories
 VIS_OUTPUT_DIR = "/home/cvpr_ug_4/saaransh/fish_AI_images/13.09.2025/yolo_visualizations" # Base output dir for images
 LABELS_OUTPUT_DIR = "/home/cvpr_ug_4/saaransh/fish_AI_images/13.09.2025/yolo_labels" # Base output dir for txt files
 CONF_THRESHOLD = 0.40 # Confidence threshold (adjust as needed)
 IOU_THRESHOLD = 0.45 # Non-Max Suppression threshold (adjust as needed)
-GPU_DEVICE = 1 # Specify the GPU index (0, 1, etc.) or 'cpu'
+GPU_DEVICE = 0 # Specify the GPU index (0, 1, etc.) or 'cpu'
 
 # --- Visualization Settings ---
 BBOX_COLOR = (0, 255, 0) # Green color for bounding box (BGR)
@@ -77,7 +77,9 @@ def run_inference_and_visualize():
     # --- 3. Process Each Image ---
     for img_path in image_paths:
         print(f"\n--- Processing: {img_path} ---")
-
+        
+        if 'SKY' in img_path:
+            continue
         try:
             # --- 3a. Read Image ---
             img_bgr = cv2.imread(img_path)
@@ -126,7 +128,7 @@ def run_inference_and_visualize():
             vis_output_subdir = os.path.join(VIS_OUTPUT_DIR, relative_subdir)
             os.makedirs(vis_output_subdir, exist_ok=True)
             vis_base_filename = Path(img_path).stem # Filename without extension
-            vis_output_path = os.path.join(vis_output_subdir, f"{vis_base_filename}_pred.png")
+            vis_output_path = os.path.join(vis_output_subdir, f"{vis_base_filename}.png")
 
             # Labels output path
             labels_output_subdir = os.path.join(LABELS_OUTPUT_DIR, relative_subdir)
