@@ -51,6 +51,7 @@ def run_multi_class_predictions(base_dir, yolo_repo_path, model_weights):
                     "python", str(detect_script),
                     "--weights", str(weights_path),
                     "--source", str(patch),
+                    "--device", "0",
                     "--project", str(pred_dir),
                     "--name", "temp",
                     "--save-txt",        # Extract all objects to .txt
