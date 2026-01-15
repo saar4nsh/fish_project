@@ -1,510 +1,176 @@
 import cv2
-
 import numpy as np
-
 import math
-
-from pathlib import Path
-
-from collections import defaultdict
-
-import shutil
-
+import re
 import os
+from pathlib import Path
+from collections import defaultdict
+from tqdm import tqdm
 
-
-
-# --- Configuration ---
-
-
-
-# **NEW**: Path to the directory containing the pre-generated .txt labels
-
-LABEL_DIR = "/home/cv2pr_ug_4/saaransh/fish_AI_images/13.09.2025/yolo_labels"
-
-
-
-# **NEW**: Path to the directory containing the images (we only need SKY)
-
-IMAGE_DIR = "/home/cv2pr_ug_4/saaransh/fish_AI_images/13.09.2025/cell_patches"
-
-
-
-# **NEW**: Path for the final "fused" outputs
-
-OUTPUT_DIR = "/home/cv2pr_ug_4/saaransh/fish_AI_images/13.09.2025/fused_results"
-
-
-
-# Visualization colors
-
-# 0: Green, 1: Red, 2: Aqua/Fusion
-
+# --- CONFIGURATION ---
+BASE_DIR = "FISH-Sample-Standardized" 
+CHANNELS = ['FITC', 'ORANGE', 'AQUA']
 COLORS = {
-
-    0: (0, 255, 0),  # Green
-
-    1: (0, 0, 255),  # Red
-
-    2: (255, 255, 0) # Aqua / Fusion (Cyan/Yellow)
-
+    0: (0, 255, 0),   # Green (FITC)
+    1: (0, 0, 255),   # Red (ORANGE)
+    2: (255, 255, 0), # Aqua (AQUA)
+    3: (255, 0, 255)  # Fusion (Magenta)
 }
 
-
-
-# --- Helper Functions ---
-
-
-
+# --- HELPER FUNCTIONS ---
 def get_center(box):
-
-    """Calculates the center (cx, cy) of a cv2 bounding box (x1, y1, x2, y2)."""
-
     x1, y1, x2, y2 = box
-
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
-
-
 def get_diag(box):
-
-    """Calculates the diagonal length of a cv2 bounding box (x1, y1, x2, y2)."""
-
     x1, y1, x2, y2 = box
-
     return math.sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2))
 
-
-
 def get_distance(p1, p2):
-
-    """Calculates the Euclidean distance between two points (x1, y1) and (x2, y2)."""
-
     return math.sqrt(pow(p1[0] - p2[0], 2) + pow(p1[1] - p2[1], 2))
 
-
-
 def yolo_to_cv2(yolo_box, img_shape):
-
-    """Converts a YOLO tuple (cx_n, cy_n, w_n, h_n) to a cv2 box (x1, y1, x2, y2)."""
-
-    img_h, img_w = img_shape
-
+    h, w = img_shape
     cx_n, cy_n, w_n, h_n = yolo_box
-
-   
-
-    box_w = w_n * img_w
-
-    box_h = h_n * img_h
-
-    cx = cx_n * img_w
-
-    cy = cy_n * img_h
-
-   
-
-    x1 = int(cx - box_w / 2)
-
-    y1 = int(cy - box_h / 2)
-
-    x2 = int(cx + box_w / 2)
-
-    y2 = int(cy + box_h / 2)
-
-   
-
+    x1 = int((cx_n - w_n/2) * w)
+    y1 = int((cy_n - h_n/2) * h)
+    x2 = int((cx_n + w_n/2) * w)
+    y2 = int((cy_n + h_n/2) * h)
     return (x1, y1, x2, y2)
 
-
-
-def cv2_to_yolo(cv2_box, img_shape, class_id):
-
-    """Converts a cv2 box (x1, y1, x2, y2) to a YOLO tuple (cid, cx_n, cy_n, w_n, h_n)."""
-
-    img_h, img_w = img_shape
-
+def cv2_to_yolo(cv2_box, img_shape, cid):
+    h, w = img_shape
     x1, y1, x2, y2 = cv2_box
+    bw, bh = x2 - x1, y2 - y1
+    # Ensure values stay within 0-1 range
+    return (cid, max(0, min(1, (x1 + bw/2)/w)), max(0, min(1, (y1 + bh/2)/h)), max(0, min(1, bw/w)), max(0, min(1, bh/h)))
 
-   
-
-    box_w = x2 - x1
-
-    box_h = y2 - y1
-
-    cx = x1 + box_w / 2.0
-
-    cy = y1 + box_h / 2.0
-
-   
-
-    cx_n = cx / img_w
-
-    cy_n = cy / img_h
-
-    w_n = box_w / img_w
-
-    h_n = box_h / img_h
-
-   
-
-    return (int(class_id), cx_n, cy_n, w_n, h_n)
-
-
-
-def draw_labels(image, labels_to_draw, colors):
-
-    """Draws colored bounding boxes on an image without text."""
-
-    for class_id, box in labels_to_draw:
-
-        x1, y1, x2, y2 = map(int, box)
-
-        color = colors.get(class_id, (255, 255, 255)) # Default to white
-
-       
-
-        # Draw rectangle
-
-        cv2.rectangle(image, (x1, y1), (x2, y2), color, 1) # Thickness of 2
-
-    return image
-
-
-
-# --- Main Processing Function ---
-
-def process_fused_labels(label_dir, image_dir, vis_output_dir, label_output_dir):
-    """
-    Main function to read .txt labels, perform fusion logic,
-    and save visualizations and new labels.
-    """
+def process_fusion_logic(cell_data, sky_path, output_label_path, output_vis_path):
+    sky_img = cv2.imread(str(sky_path))
+    if sky_img is None: 
+        return
+    img_h, img_w, _ = sky_img.shape
     
-    print("--- Starting Gene Fusion Processing from .txt Labels ---")
-    
-    # === 1. Setup Paths ===
-    label_dir = Path(label_dir)
-    image_dir = Path(image_dir)
-    vis_output_dir = Path(vis_output_dir)
-    label_output_dir = Path(label_output_dir)
-    
-    vis_output_dir.mkdir(parents=True, exist_ok=True)
-    label_output_dir.mkdir(parents=True, exist_ok=True)
-    
-    print(f"Output visualizations will be saved to: {vis_output_dir}")
-    print(f"Output labels will be saved to: {label_output_dir}")
+    all_dets = []
+    for ch_idx, txt_path in cell_data.items():
+        if not txt_path.exists(): continue
+        with open(txt_path, 'r') as f:
+            for line in f:
+                parts = list(map(float, line.strip().split()))
+                if len(parts) >= 5:
+                    # parts[0] is class, but we use ch_idx for consistency
+                    cv2_box = yolo_to_cv2(parts[1:5], (img_h, img_w))
+                    all_dets.append({'cid': ch_idx, 'box': cv2_box, 'yolo': parts[1:5]})
 
-    # === 2. Find and Group Image & Label Files ===
-    cells = defaultdict(dict)
-    
-    # Find SKY images first
-    print(f"Scanning for SKY images in: {image_dir}")
-    
-    sky_images_found_in_dir = False
-    
-    # --- *** START BUGFIX *** ---
-    # Updated file parsing logic
-    for img_path in image_dir.rglob('*.png'):
-        
-        stem = img_path.stem # e.g., "A-25-2530_cell_006_SKY"
-        
-        # Partition on the *last* '_cell_'
-        base_name, separator, cell_part = stem.rpartition('_cell_')
-        if not separator:
-            continue # No '_cell_' found, skip this file
-            
-        # cell_part is now "006_SKY"
-        # Partition on the *last* '_' to separate number from channel
-        cell_num, sep, channel = cell_part.rpartition('_')
-        if not sep:
-            continue # Unexpected format, e.g., "A-25-2530_cell_006"
-            
-        if channel != 'SKY':
-            continue # This loop is only for SKY images
-            
-        cell_id = separator + cell_num # This is now "_cell_006"
-        
-        # The key is the parent dir name and the cell_id
-        cell_key = (img_path.parent.name, cell_id) 
-        
-        cells[cell_key]['SKY'] = img_path
-        cells[cell_key]['base_name'] = base_name # Store this for output naming
-        sky_images_found_in_dir = True
-    # --- *** END BUGFIX *** ---
+    greens = [d for d in all_dets if d['cid'] == 0]
+    reds = [d for d in all_dets if d['cid'] == 1]
+    aquas = [d for d in all_dets if d['cid'] == 2]
 
-    if not sky_images_found_in_dir:
-        print(f"  No SKY images found in {image_dir}. Skipping this entire directory.")
-        return # Exit the function
-
-    # Find .txt labels
-    print(f"Scanning for labels in: {label_dir}")
+    used_g, used_r = set(), set()
+    final_labels = []
     
-    # --- *** START BUGFIX *** ---
-    # Updated file parsing logic
-    for txt_path in label_dir.rglob('*.txt'):
-        if 'fused' in txt_path.name:
-            continue
-            
-        stem = txt_path.stem # e.g., "A-25-2530_cell_006_FITC"
+    # 1. Matching Logic (Sorted by distance to prioritize closest pairs)
+    pairs = []
+    for i, g in enumerate(greens):
+        for j, r in enumerate(reds):
+            dist = get_distance(get_center(g['box']), get_center(r['box']))
+            thresh = (get_diag(g['box']) + get_diag(r['box'])) / 2.0
+            if dist <= thresh:
+                pairs.append((dist, i, j))
+    
+    pairs.sort()
+    for dist, gi, rj in pairs:
+        if gi in used_g or rj in used_r: continue
+        used_g.add(gi); used_r.add(rj)
+        gc, rc = get_center(greens[gi]['box']), get_center(reds[rj]['box'])
+        fc = ((gc[0]+rc[0])/2, (gc[1]+rc[1])/2)
+        side = (get_diag(greens[gi]['box']) + get_diag(reds[rj]['box'])) / 2.828
+        f_box = (int(fc[0]-side), int(fc[1]-side), int(fc[0]+side), int(fc[1]+side))
         
-        # Partition on the *last* '_cell_'
-        base_name, separator, cell_part = stem.rpartition('_cell_')
-        if not separator:
-            continue 
-            
-        # cell_part is now "006_FITC"
-        # Partition on the *last* '_' to separate number from channel
-        cell_num, sep, channel = cell_part.rpartition('_')
-        if not sep:
-            continue # Unexpected format
-            
-        cell_id = separator + cell_num # This is now "_cell_006"
-        cell_key = (txt_path.parent.name, cell_id)
-        
-        # Add the label path based on the parsed channel
-        if channel == 'FITC':
-            cells[cell_key]['FITC_label'] = txt_path
-        elif channel == 'ORANGE':
-            cells[cell_key]['ORANGE_label'] = txt_path
-        elif channel == 'AQUA':
-            cells[cell_key]['AQUA_label'] = txt_path
-    # --- *** END BUGFIX *** ---
-            
-    print(f"Found {len(cells)} unique cells to process.")
+        final_labels.append(cv2_to_yolo(f_box, (img_h, img_w), 3))
+        cv2.rectangle(sky_img, (f_box[0], f_box[1]), (f_box[2], f_box[3]), COLORS[3], 1)
 
-    # === 3. Process Each Cell ===
-    for cell_key, file_paths in cells.items():
-        # **MODIFIED**: Use base_name from dict, fallback to parent_name
-        # (This is more robust if files are in subfolders)
-        parent_name = file_paths.get('base_name', cell_key[0])
-        cell_num_id = cell_key[1]
-        
-        print(f"\n--- Processing Cell: {parent_name}{cell_num_id} ---")
-        
-        # --- 3a. Check for SKY image (ESSENTIAL) ---
-        if 'SKY' not in file_paths:
-            print(f"   Skipping... Missing SKY image for overlay.")
-            continue
-            
-        sky_path = file_paths['SKY']
-        sky_img = cv2.imread(str(sky_path))
-        if sky_img is None:
-            print(f"   Error: Could not read SKY image at {sky_path}, skipping cell.")
-            continue
-        vis_img = sky_img.copy()
-        img_h, img_w, _ = sky_img.shape
+    # 2. Add residuals (Unfused signals)
+    for i, g in enumerate(greens):
+        if i not in used_g:
+            final_labels.append((0, *g['yolo']))
+            cv2.rectangle(sky_img, (g['box'][0], g['box'][1]), (g['box'][2], g['box'][3]), COLORS[0], 1)
+    for i, r in enumerate(reds):
+        if i not in used_r:
+            final_labels.append((1, *r['yolo']))
+            cv2.rectangle(sky_img, (r['box'][0], r['box'][1]), (r['box'][2], r['box'][3]), COLORS[1], 1)
+    for a in aquas:
+        final_labels.append((2, *a['yolo']))
+        cv2.rectangle(sky_img, (a['box'][0], a['box'][1]), (a['box'][2], a['box'][3]), COLORS[2], 1)
 
-        # --- 3b. Read Detections from .txt Files ---
-        # (This section was already correct)
-        all_detections = []
-        label_key_map = {'FITC_label': 0, 'ORANGE_label': 1, 'AQUA_label': 2}
+    # 3. Robust Saving (Forcing file write)
+    try:
+        with open(output_label_path, 'w', encoding='utf-8') as f:
+            for lab in final_labels:
+                f.write(f"{int(lab[0])} {' '.join(f'{x:.6f}' for x in lab[1:])}\n")
+            f.flush()
+            os.fsync(f.fileno()) # Forces OS to write to disk immediately
         
-        for label_key, class_id in label_key_map.items():
-            if label_key in file_paths:
-                txt_path = file_paths[label_key]
-                try:
-                    with open(txt_path, 'r') as f:
-                        lines = f.readlines()
+        cv2.imwrite(str(output_vis_path), sky_img)
+    except Exception as e:
+        print(f"Error saving {output_label_path.name}: {e}")
+
+def run_multi_model_fusion():
+    base_path = Path(BASE_DIR).resolve()
+    # Sort case directories to ensure consistent processing order
+    case_dirs = sorted([d for d in base_path.iterdir() if d.is_dir()])
+
+    for case_dir in tqdm(case_dirs, desc="Processing Cases"):
+        patch_dir = case_dir / "cell_patches"
+        if not patch_dir.exists(): continue
+
+        # Refresh sky files dictionary for every case
+        sky_files = {f.name: f for f in patch_dir.glob("*_SKY_cell*.png")}
+
+        for m_idx in range(1, 6):
+            pred_dir = case_dir / f"predictions-{m_idx}"
+            label_dir = pred_dir / "labels"
+            vis_dir = pred_dir / "visualisations"
+            
+            if not label_dir.exists(): continue
+            vis_dir.mkdir(exist_ok=True, parents=True)
+
+            # Group prediction TXT files
+            cell_groups = defaultdict(dict)
+            for txt_file in label_dir.glob("*.txt"):
+                # Avoid processing a file we just created if the script is re-run
+                if "_SKY_cell" in txt_file.name: continue 
+                
+                # Regex matches prefix, channel, and cell index
+                match = re.search(r'^(.*)_(FITC|ORANGE|AQUA)_(cell\d+)', txt_file.stem)
+                if match:
+                    prefix, channel, cell_id = match.groups()
+                    unique_key = f"{prefix}_{cell_id}"
+                    ch_idx = CHANNELS.index(channel)
+                    cell_groups[unique_key][ch_idx] = txt_file
+
+            for unique_key, data in cell_groups.items():
+                # Correctly map back to the SKY image name found in cell_patches
+                expected_sky_name = unique_key.replace("_cell", "_SKY_cell") + ".png"
+                
+                if expected_sky_name in sky_files:
+                    sky_path = sky_files[expected_sky_name]
                     
-                    for i, line in enumerate(lines):
-                        parts = line.strip().split()
-                        if len(parts) == 5:
-                            cx_n, cy_n, w_n, h_n = map(float, parts[1:])
-                            yolo_box = (cx_n, cy_n, w_n, h_n)
-                            cv2_box = yolo_to_cv2(yolo_box, (img_h, img_w))
-                            
-                            all_detections.append({
-                                'class_id': class_id,
-                                'cv2_box': cv2_box,
-                                'yolo_tuple': (class_id, cx_n, cy_n, w_n, h_n),
-                                'idx': f"{class_id}_{i}"
-                            })
-                except Exception as e:
-                    print(f"   Warning: Could not read or parse {txt_path}. Error: {e}")
+                    # Target filenames
+                    out_label_name = sky_path.with_suffix('.txt').name
+                    out_vis_name = sky_path.name
+                    
+                    # Full paths
+                    target_label_path = label_dir / out_label_name
+                    target_vis_path = vis_dir / out_vis_name
+                    
+                    process_fusion_logic(
+                        data, 
+                        sky_path, 
+                        target_label_path, 
+                        target_vis_path
+                    )
 
-        # Separate detections by class
-        greens = [d for d in all_detections if d['class_id'] == 0]
-        reds = [d for d in all_detections if d['class_id'] == 1]
-        aquas = [d for d in all_detections if d['class_id'] == 2]
-        
-        print(f"   Initial signals read: {len(greens)} Green, {len(reds)} Red, {len(aquas)} Aqua")
-
-        # --- 3c. Implement Fusion Logic ---
-        # (This section was already correct)
-        pairs = []
-        for g in greens:
-            for r in reds:
-                g_center = get_center(g['cv2_box'])
-                r_center = get_center(r['cv2_box'])
-                dist = get_distance(g_center, r_center)
-                
-                g_diag = get_diag(g['cv2_box'])
-                r_diag = get_diag(r['cv2_box'])
-                avg_diag = (g_diag + r_diag) / 2.0
-                
-                pairs.append({
-                    'green': g,
-                    'red': r,
-                    'dist': dist,
-                    'avg_diag': avg_diag
-                })
-        
-        sorted_pairs = sorted(pairs, key=lambda p: p['dist'])
-        
-        final_labels_to_save = [] 
-        final_boxes_to_draw = [] 
-        used_signal_indices = set()
-        
-        for pair in sorted_pairs:
-            g = pair['green']
-            r = pair['red']
-            
-            if g['idx'] in used_signal_indices or r['idx'] in used_signal_indices:
-                continue
-                
-            if pair['dist'] <= pair['avg_diag']:
-                used_signal_indices.add(g['idx'])
-                used_signal_indices.add(r['idx'])
-                
-                g_center = get_center(g['cv2_box'])
-                r_center = get_center(r['cv2_box'])
-                
-                fusion_cx = (g_center[0] + r_center[0]) / 2.0
-                fusion_cy = (g_center[1] + r_center[1]) / 2.0
-                side_length = pair['avg_diag'] / math.sqrt(2)
-                half_side = side_length / 2.0
-                
-                f_x1 = int(fusion_cx - half_side)
-                f_y1 = int(fusion_cy - half_side)
-                f_x2 = int(fusion_cx + half_side)
-                f_y2 = int(fusion_cy + half_side)
-                fusion_cv2_box = (f_x1, f_y1, f_x2, f_y2)
-                
-                fusion_yolo_tuple = cv2_to_yolo(fusion_cv2_box, (img_h, img_w), class_id=2)
-                
-                final_labels_to_save.append(fusion_yolo_tuple)
-                final_boxes_to_draw.append((2, fusion_cv2_box))
-
-        # --- 3d. Add all unused/original signals ---
-        # (This section was already correct)
-        for g in greens:
-            if g['idx'] not in used_signal_indices:
-                final_labels_to_save.append(g['yolo_tuple'])
-                final_boxes_to_draw.append((0, g['cv2_box']))
-        for r in reds:
-            if r['idx'] not in used_signal_indices:
-                final_labels_to_save.append(r['yolo_tuple'])
-                final_boxes_to_draw.append((1, r['cv2_box']))
-        for a in aquas:
-            final_labels_to_save.append(a['yolo_tuple'])
-            final_boxes_to_draw.append((2, a['cv2_box']))
-            
-        print(f"   Final signals: {len(final_labels_to_save)} total.")
-
-        # --- 3e. Save Visualization ---
-        vis_img_final = draw_labels(vis_img, final_boxes_to_draw, COLORS)
-        
-        # **MODIFIED**: Use the same parent_name and cell_num_id from above
-        output_name_base = f"{parent_name}{cell_num_id}_SKY_fused"
-        vis_save_path = vis_output_dir / f"{output_name_base}.png"
-        cv2.imwrite(str(vis_save_path), vis_img_final)
-
-        # --- 3f. Save YOLO Labels ---
-        label_save_path = label_output_dir / f"{output_name_base}.txt"
-        with open(label_save_path, 'w') as f:
-            for (cid, cx_n, cy_n, w_n, h_n) in final_labels_to_save:
-                f.write(f"{cid} {cx_n:.6f} {cy_n:.6f} {w_n:.6f} {h_n:.6f}\n")
-                
-        print(f"   Successfully saved outputs to: {output_name_base}.png / .txt")
-
-    print("\n--- Processing Complete for this directory ---")
-
-    
-# --- Main execution ---
 if __name__ == "__main__":
-    
-    # *** IMPORTANT ***
-    # --- PLEASE UPDATE THESE PARENT PATHS ---
-    
-    # Path to the PARENT directory containing label sub-directories (e.g., .../yolo_labels)
-    PARENT_LABEL_DIR = "/home/cvpr_ug_4/saaransh/fish_AI_images/temp/labels"
-    
-    # Path to the PARENT directory containing image sub-directories (e.g., .../cell_patches)
-    PARENT_IMAGE_DIR = "/home/cvpr_ug_4/saaransh/fish_AI_images/13.09.2025/cell_patches"
-    
-    # Path to the PARENT directory where visualization sub-directories are (e.g., .../visualizations)
-    PARENT_VIS_DIR = "/home/cvpr_ug_4/saaransh/fish_AI_images/temp/visualizations" # User must confirm this path
-    
-    # ------------------------------------
-    
-    print("--- Starting Batch Processing ---")
-    
-    # Use Path objects
-    p_label_dir = Path(PARENT_LABEL_DIR)
-    p_image_dir = Path(PARENT_IMAGE_DIR)
-    p_vis_dir = Path(PARENT_VIS_DIR)
-    
-    if not p_label_dir.is_dir():
-        print(f"Error: PARENT_LABEL_DIR does not exist: {p_label_dir}")
-        exit()
-    if not p_image_dir.is_dir():
-        print(f"Error: PARENT_IMAGE_DIR does not exist: {p_image_dir}")
-        exit()
-    
-    # We will iterate through the sub-directories in the PARENT_LABEL_DIR
-    # and assume a matching sub-directory exists in PARENT_IMAGE_DIR
-    
-    processed_count = 0
-    skipped_count = 0
-    
-    # Iterate over all items in the parent label directory
-    for sub_dir in p_label_dir.iterdir():
-        # Check if the item is a directory
-        if sub_dir.is_dir():
-            sub_dir_name = sub_dir.name
-            print(f"\n======================================")
-            print(f"Found Sub-Directory: {sub_dir_name}")
-            
-            # 1. Define specific paths for this sub-directory
-            
-            # --- Input paths ---
-            current_label_dir = sub_dir
-            current_image_dir = p_image_dir / sub_dir_name
-            
-            # --- Output paths ---
-            # Labels go back into the *input* label directory
-            current_label_output_dir = current_label_dir 
-            # Visualizations go into the parallel visualization directory
-            current_vis_output_dir = p_vis_dir / sub_dir_name
-            
-            # 2. Check if the matching image directory exists
-            if not current_image_dir.is_dir():
-                print(f"  Failure: Matching image directory not found at: {current_image_dir}")
-                print(f"  Skipping this sub-directory.")
-                skipped_count += 1
-                continue
-                
-            print(f"  -> Processing inputs from:")
-            print(f"     Labels: {current_label_dir}")
-            print(f"     Images: {current_image_dir}")
-            print(f"  -> Saving outputs to:")
-            print(f"     Labels: {current_label_output_dir}")
-            print(f"     Visuals: {current_vis_output_dir}")
-            
-            # 3. Run the processing for this specific sub-directory
-            try:
-                process_fused_labels(
-                    label_dir=str(current_label_dir),
-                    image_dir=str(current_image_dir),
-                    vis_output_dir=str(current_vis_output_dir),    # NEW
-                    label_output_dir=str(current_label_output_dir) # NEW
-                )
-                processed_count += 1
-            except Exception as e:
-                print(f"     !!! ERROR processing {sub_dir_name}: {e}")
-                skipped_count += 1
-                
-    print(f"\n======================================")
-    print("--- Batch Processing Complete ---")
-    print(f"Successfully processed: {processed_count} sub-directories.")
-    print(f"Skipped / Errored: {skipped_count} sub-directories.")
+    run_multi_model_fusion()
+    print("\n✅ Multi-model fusion finalized.")
